@@ -1,0 +1,3 @@
+Background: #1c1f21
+Object: #FF7100
+Slash: #FFFFFF
