@@ -12,6 +12,72 @@ class GeometryUtils {
     return area.abs() / 2.0;
   }
 
+  /// Checks if a point is inside a polygon using ray casting algorithm.
+  static bool isPointInsidePolygon(Offset point, List<Offset> polygon) {
+    if (polygon.isEmpty) return false;
+    bool inside = false;
+    for (int i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      if (((polygon[i].dy > point.dy) != (polygon[j].dy > point.dy)) &&
+          (point.dx < (polygon[j].dx - polygon[i].dx) * (point.dy - polygon[i].dy) / (polygon[j].dy - polygon[i].dy) + polygon[i].dx)) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  /// Calculates the minimum distance from a point to a polygon boundary.
+  static double getMinDistanceToPolygon(Offset p, List<Offset> polygon) {
+    if (polygon.isEmpty) return double.infinity;
+    double minSqrDist = double.infinity;
+    for (int i = 0; i < polygon.length; i++) {
+      Offset v = polygon[i];
+      Offset w = polygon[(i + 1) % polygon.length];
+      
+      double l2 = (v - w).distanceSquared;
+      if (l2 == 0) {
+        double d2 = (p - v).distanceSquared;
+        if (d2 < minSqrDist) minSqrDist = d2;
+        continue;
+      }
+      double t = ((p.dx - v.dx) * (w.dx - v.dx) + (p.dy - v.dy) * (w.dy - v.dy)) / l2;
+      t = max(0, min(1, t));
+      Offset projection = Offset(v.dx + t * (w.dx - v.dx), v.dy + t * (w.dy - v.dy));
+      double distSq = (p - projection).distanceSquared;
+      if (distSq < minSqrDist) minSqrDist = distSq;
+    }
+    return sqrt(minSqrDist);
+  }
+
+  /// Returns the number of unique boundary intersections a polyline makes with a polygon.
+  static int getIntersectionCount(List<Offset> polygon, List<Offset> polyline) {
+    if (polyline.length < 2 || polygon.isEmpty) return 0;
+    
+    List<Offset> intersections = [];
+    const double epsilon = 0.001;
+
+    for (int j = 0; j < polyline.length - 1; j++) {
+      Offset s1 = polyline[j];
+      Offset s2 = polyline[j + 1];
+      for (int i = 0; i < polygon.length; i++) {
+        Offset? intersect = _getLineIntersection(s1, s2, polygon[i], polygon[(i + 1) % polygon.length]);
+        if (intersect != null) {
+          // Check if we already have this intersection point (or one very close to it)
+          bool isNew = true;
+          for (var existing in intersections) {
+            if ((existing - intersect).distance < epsilon) {
+              isNew = false;
+              break;
+            }
+          }
+          if (isNew) {
+            intersections.add(intersect);
+          }
+        }
+      }
+    }
+    return intersections.length;
+  }
+
   /// Splits a polygon using a polyline.
   /// Assumes the polyline crosses the polygon.
   static List<List<Offset>> splitPolygonWithPolyline(List<Offset> polygon, List<Offset> polyline) {
@@ -159,29 +225,71 @@ class GeometryUtils {
     if (random.nextDouble() > 0.4) return [];
 
     List<List<Offset>> holes = [];
-    int holeCount = random.nextInt(2) + 1;
+    int holeTargetCount = random.nextInt(2) + 1;
+    const double margin = 20.0;
 
-    for (int i = 0; i < holeCount; i++) {
-       List<Offset> hole = [];
-       double holeSize = 30.0 + random.nextDouble() * 40.0;
-       double angleOffset = random.nextDouble() * 2 * pi;
-       
-       for (int v = 0; v < 5; v++) {
-         double angle = (2 * pi * v) / 5 + angleOffset;
-         double radius = (0.8 + random.nextDouble() * 0.4) * (holeSize / 2);
-         hole.add(Offset(cos(angle) * radius, sin(angle) * radius));
-       }
+    for (int i = 0; i < holeTargetCount; i++) {
+      // 1. Generate a candidate hole centered at (0,0)
+      List<Offset> holeBase = [];
+      double holeSize = 30.0 + random.nextDouble() * 40.0;
+      double angleOffset = random.nextDouble() * 2 * pi;
+      int vCount = random.nextInt(3) + 3; // 3 to 5 vertices
+      
+      for (int v = 0; v < vCount; v++) {
+        double angle = (2 * pi * v) / vCount + angleOffset;
+        double radius = (0.7 + random.nextDouble() * 0.3) * (holeSize / 2);
+        holeBase.add(Offset(cos(angle) * radius, sin(angle) * radius));
+      }
+      if (smooth) holeBase = _smoothPolygon(holeBase, 2);
 
-       if (smooth) hole = _smoothPolygon(hole, 2);
+      // 2. Try placing it multiple times
+      List<Offset>? placedHole;
+      for (int attempt = 0; attempt < 30; attempt++) {
+        // Pick a random shift within a reasonable range
+        Offset shift = Offset(
+          (random.nextDouble() - 0.5) * 250,
+          (random.nextDouble() - 0.5) * 250,
+        );
+        
+        List<Offset> candidate = holeBase.map((p) => p + shift).toList();
+        
+        if (_isHolePlacementValid(candidate, outer, holes, margin)) {
+          placedHole = candidate;
+          break;
+        }
+      }
 
-       Offset shift = Offset(
-         (random.nextDouble() - 0.5) * 100,
-          (random.nextDouble() - 0.5) * 100,
-       );
-       
-       holes.add(hole.map((p) => p + shift).toList());
+      if (placedHole != null) {
+        holes.add(placedHole);
+      }
     }
     return holes;
+  }
+
+  /// Validates if a hole placement is safe (inside outer, away from walls and other holes).
+  static bool _isHolePlacementValid(List<Offset> hole, List<Offset> outer, List<List<Offset>> existingHoles, double margin) {
+    // Check if every vertex of the hole is inside the outer polygon and respects the margin
+    for (var p in hole) {
+      if (!isPointInsidePolygon(p, outer)) return false;
+      if (getMinDistanceToPolygon(p, outer) < margin) return false;
+    }
+
+    // Check if every vertex of the outer polygon respects the margin from the hole
+    for (var p in outer) {
+      if (getMinDistanceToPolygon(p, hole) < margin) return false;
+    }
+
+    // Check against existing holes
+    for (var otherHole in existingHoles) {
+      for (var p in hole) {
+        if (getMinDistanceToPolygon(p, otherHole) < margin) return false;
+      }
+      for (var p in otherHole) {
+        if (getMinDistanceToPolygon(p, hole) < margin) return false;
+      }
+    }
+
+    return true;
   }
 
   static List<Offset> _smoothPolygon(List<Offset> points, int iterations) {

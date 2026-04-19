@@ -98,12 +98,12 @@ class _GameScreenState extends State<GameScreen> {
                       ),
                     )
                   else
-                    const Padding(
-                      padding: EdgeInsets.only(bottom: 40),
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 40),
                       child: Text(
-                        'SLICE ACROSS THE OBJECT',
+                        provider.errorMessage ?? 'SLICE ACROSS THE OBJECT',
                         style: TextStyle(
-                          color: Colors.white24,
+                          color: provider.errorMessage != null ? Colors.redAccent : Colors.white24,
                           fontWeight: FontWeight.bold,
                           letterSpacing: 2,
                         ),
@@ -359,7 +359,7 @@ class _GameScreenState extends State<GameScreen> {
                   ),
                   const Divider(color: Colors.white10),
                   SwitchListTile(
-                    title: const Text('Pointy Shapes', style: TextStyle(color: Colors.white)),
+                    title: const Text('Angular Shapes', style: TextStyle(color: Colors.white)),
                     subtitle: const Text('Gives objects sharp vertices', style: TextStyle(color: Colors.white54, fontSize: 12)),
                     value: provider.isPointy,
                     onChanged: (val) => provider.setPointy(val),

@@ -20,6 +20,7 @@ class GameProvider extends ChangeNotifier {
   int _currentPlayerIndex = 0;
   List<double> _multiplayerScores = [];
   bool _isWaitingForNextPlayer = false;
+  String? _errorMessage;
 
   List<Offset> get currentPolygon => _currentPolygon;
   List<List<Offset>> get holes => _holes;
@@ -36,6 +37,7 @@ class GameProvider extends ChangeNotifier {
   int get currentPlayerIndex => _currentPlayerIndex;
   List<double> get multiplayerScores => _multiplayerScores;
   bool get isWaitingForNextPlayer => _isWaitingForNextPlayer;
+  String? get errorMessage => _errorMessage;
 
   GameProvider() {
     newGame();
@@ -60,6 +62,7 @@ class GameProvider extends ChangeNotifier {
     _currentPlayerIndex = 0;
     _multiplayerScores = [];
     _isWaitingForNextPlayer = false;
+    _errorMessage = null;
     _lastScore = null;
     notifyListeners();
   }
@@ -82,6 +85,7 @@ class GameProvider extends ChangeNotifier {
 
   void updateCutStart(Offset pos) {
     if (_gameEnded) return;
+    _errorMessage = null;
     _cutPath = [pos];
     notifyListeners();
   }
@@ -94,63 +98,106 @@ class GameProvider extends ChangeNotifier {
 
   void submitCut() {
     if (_cutPath.length < 2 || _gameEnded) return;
-    
-    // Check total distance to prevent accidental tiny taps
-    double dist = 0;
-    for (int i = 0; i < _cutPath.length - 1; i++) {
-       dist += (_cutPath[i+1] - _cutPath[i]).distance;
-    }
-    
-    if (dist < 30) {
-      _cutPath = [];
-      notifyListeners();
-      return;
-    }
 
-    final splitOuter = GeometryUtils.splitPolygonWithPolyline(_currentPolygon, _cutPath);
-    
-    // Split all holes
-    final splitHoles = _holes.map((h) => GeometryUtils.splitPolygonWithPolyline(h, _cutPath)).toList();
+    try {
+      // Check total distance to prevent accidental tiny taps
+      double dist = 0;
+      for (int i = 0; i < _cutPath.length - 1; i++) {
+        dist += (_cutPath[i + 1] - _cutPath[i]).distance;
+      }
 
-    // Area 1 = Area(Outer1) - Sum(Area(HolePieces in Side 1))
-    double area1 = GeometryUtils.calculateArea(splitOuter[0]);
-    for (var sh in splitHoles) {
-      area1 -= GeometryUtils.calculateArea(sh[0]);
-    }
+      if (dist < 30) {
+        _cutPath = [];
+        notifyListeners();
+        return;
+      }
 
-    // Area 2 = Area(Outer2) - Sum(Area(HolePieces in Side 2))
-    double area2 = GeometryUtils.calculateArea(splitOuter[1]);
-    for (var sh in splitHoles) {
-      area2 -= GeometryUtils.calculateArea(sh[1]);
-    }
+      // Validation: Cut must start and end outside the shape
+      final bool startInside = GeometryUtils.isPointInsidePolygon(_cutPath.first, _currentPolygon);
+      final bool endInside = GeometryUtils.isPointInsidePolygon(_cutPath.last, _currentPolygon);
 
-    final totalArea = area1 + area2;
+      if (startInside || endInside) {
+        _errorMessage = "MUST START AND END OUTSIDE";
+        _cutPath = [];
+        notifyListeners();
+        return;
+      }
 
-    if (totalArea > 0) {
-      final ratio1 = area1 / totalArea;
-      final ratio2 = area2 / totalArea;
-      final diff1 = (ratio1 - _targetRatio).abs();
-      final diff2 = (ratio2 - _targetRatio).abs();
-      final bestDiff = diff1 < diff2 ? diff1 : diff2;
-      _lastScore = (100 - (bestDiff * 200)).clamp(0, 100);
-      
-      if (_isMultiplayer) {
-        _multiplayerScores.add(_lastScore!);
-        if (_currentPlayerIndex < _playerCount - 1) {
-          _isWaitingForNextPlayer = true;
+      // Validation: Check if the cut crosses the shape exactly once
+      final int intersectionCount = GeometryUtils.getIntersectionCount(_currentPolygon, _cutPath);
+      if (intersectionCount != 2) {
+        if (intersectionCount == 0) {
+          _errorMessage = "LINE DID NOT TOUCH";
+        } else if (intersectionCount < 2) {
+          _errorMessage = "CONVEX CUTS ONLY; MUST CROSS COMPLETELY";
+        } else {
+          _errorMessage = "ONLY ONE CUT LINE PERMITTED";
+        }
+        _cutPath = [];
+        notifyListeners();
+        return;
+      }
+
+      final splitOuter = GeometryUtils.splitPolygonWithPolyline(_currentPolygon, _cutPath);
+
+      // Ensure the cut actually split the shape into two pieces
+      if (splitOuter[1].isEmpty) {
+        _errorMessage = "INCOMPLETE LINE; CROSS COMPLETELY";
+        _cutPath = [];
+        notifyListeners();
+        return;
+      }
+
+      // Split all holes
+      final splitHoles = _holes.map((h) => GeometryUtils.splitPolygonWithPolyline(h, _cutPath)).toList();
+
+      // Area calculations
+      double area1 = GeometryUtils.calculateArea(splitOuter[0]);
+      for (var sh in splitHoles) {
+        area1 -= GeometryUtils.calculateArea(sh[0]);
+      }
+
+      double area2 = GeometryUtils.calculateArea(splitOuter[1]);
+      for (var sh in splitHoles) {
+        area2 -= GeometryUtils.calculateArea(sh[1]);
+      }
+
+      final totalArea = area1 + area2;
+
+      if (totalArea > 0) {
+        final ratio1 = area1 / totalArea;
+        final ratio2 = area2 / totalArea;
+        final diff1 = (ratio1 - _targetRatio).abs();
+        final diff2 = (ratio2 - _targetRatio).abs();
+        final bestDiff = diff1 < diff2 ? diff1 : diff2;
+        _lastScore = (100 - (bestDiff * 200)).clamp(0, 100);
+
+        if (_isMultiplayer) {
+          _multiplayerScores.add(_lastScore!);
+          if (_currentPlayerIndex < _playerCount - 1) {
+            _isWaitingForNextPlayer = true;
+          } else {
+            _gameEnded = true;
+          }
         } else {
           _gameEnded = true;
         }
       } else {
+        _lastScore = 0;
+        if (_isMultiplayer) _multiplayerScores.add(0);
         _gameEnded = true;
       }
-    } else {
-      _lastScore = 0;
-      if (_isMultiplayer) _multiplayerScores.add(0);
-      _gameEnded = true;
+      
+      // Clear path on success too, so it doesn't "stick"
+      _cutPath = [];
+      
+    } catch (e) {
+      debugPrint("Cut submission error: $e");
+      _errorMessage = "INVALID CUT GEOMETRY";
+      _cutPath = [];
+    } finally {
+      notifyListeners();
     }
-
-    notifyListeners();
   }
 
   void startNextPlayer() {
